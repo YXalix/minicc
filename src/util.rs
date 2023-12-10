@@ -31,3 +31,8 @@ pub fn read_punct(input: &str) -> Option<usize> {
         None
     };
 }
+
+// 对齐到Align的整数倍
+pub fn align_to(n: i32, align: i32) -> i32 {
+    return (n + align - 1) / align * align;
+}

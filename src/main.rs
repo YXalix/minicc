@@ -3,12 +3,17 @@ mod tokenizer;
 mod codegen;
 mod util;
 mod parse;
+use lazy_static::lazy_static;
 
-use std::env;
+use std::{env, sync::Mutex};
 
 use crate::
     {tokenizer::Token,
-    codegen::codegen};
+    codegen::codegen, parse::Function};
+
+lazy_static! {
+    static ref PROGRAM: Mutex<Function> = Mutex::new(Function::new());
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,6 +23,6 @@ fn main() {
     }
     let p = args[1].clone().leak();
     let tokens = Token::tokenize(p);
-    let programs = parse::parse(&tokens);
-    codegen(&programs);
+    parse::parse(&tokens);
+    codegen();
 }

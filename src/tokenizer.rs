@@ -7,6 +7,7 @@ use crate::util::{extract_number_and_endpoint, read_punct};
 #[derive(PartialEq)]
 #[derive(Debug)]
 pub enum TokenType {
+    TkIdent, // 标识符
     TkPunct, // 操作符如： + -
     TkNum,   // 数字
     TkEof,   // 文件终止符，即文件的最后
@@ -45,6 +46,22 @@ impl Token {
                 } else {
                     panic!("invalid number: {}", p);
                 }
+            }
+
+            // 解析标记符
+            // [a-zA-Z_][a-zA-Z0-9_]*
+            if c.is_ascii_alphabetic() || c == '_' {
+                let mut now_index = 1;
+                for c in p[1..].chars() {
+                    if c.is_ascii_alphanumeric() || c == '_' || c.is_ascii_digit() {
+                        now_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+                tokens.push(Token::new(TokenType::TkIdent, &p[..now_index], 0));
+                p = &p[now_index..];
+                continue;
             }
             if let Some(len) = read_punct(p) {
                 tokens.push(Token::new(TokenType::TkPunct, &p[..len], 0));

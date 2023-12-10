@@ -1,5 +1,4 @@
-use crate::tokenizer::{Token, TokenType};
-
+use crate::{tokenizer::{Token, TokenType}, PROGRAM};
 
 // ND_EQ,  // ==
 // ND_NE,  // !=
@@ -19,6 +18,8 @@ pub enum NodeType {
     NdLt,  // <
     NdLe,  // <=
     NdExprStmt, // 表达式语句
+    NdAssign, // 赋值语句
+    NdVar, // 变量
 }
 
 #[derive(Clone)]
@@ -26,18 +27,19 @@ pub struct Node {
     pub kind: NodeType,
     pub lhs: Option<Box<Node>>,
     pub rhs: Option<Box<Node>>,
-    pub val: i32,
+    pub val: Option<i32>,
+    pub var: Option<usize>,
 }
 
 impl Node {
-
     pub fn new_binary(kind: NodeType, lhs: Box<Node>, rhs: Box<Node>) -> Box<Node> {
         Box::new(
             Node {
                 kind,
                 lhs: Some(lhs),
                 rhs: Some(rhs),
-                val: 0,
+                val: None,
+                var: None,
             }
         )
     }
@@ -48,7 +50,8 @@ impl Node {
                 kind: NodeType::NdNum,
                 lhs: None,
                 rhs: None,
-                val,
+                val: Some(val),
+                var: None,
             }
         )
     }
@@ -59,7 +62,20 @@ impl Node {
                 kind,
                 lhs: Some(lhs),
                 rhs: None,
-                val: 0,
+                val: None,
+                var: None,
+            }
+        )
+    }
+
+    pub fn new_varnode(var_index: usize) -> Box<Node> {
+        Box::new(
+            Node {
+                kind: NodeType::NdVar,
+                lhs: None,
+                rhs: None,
+                val: None,
+                var: Some(var_index),
             }
         )
     }
@@ -71,13 +87,22 @@ fn comsume(tokens: &Vec<Token>, charactors: &str) {
     } else {
         panic!("expected token: {}, but got: {:?}", charactors, tokens[unsafe { TOKEN_POS }]);
     }
+}
 
+fn find_var(name: &'static str) -> Option<usize> {
+    for (i, var) in PROGRAM.lock().unwrap().variables.iter().enumerate()  {
+        if var.name == name {
+            return Some(i);
+        }
+    }
+    None
 }
 
 // program = stmt*
 // stmt = exprStmt
 // exprStmt = expr ";"
-// expr = equality
+// expr = assign
+// assign = equality ("=" assign)?
 // equality = relational ("==" relational | "!=" relational)*
 // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
 // add = mul ("+" mul | "-" mul)*
@@ -99,8 +124,18 @@ fn expr_stmt(tokens: &Vec<Token>) -> Box<Node> {
 }
 
 fn expr(tokens: &Vec<Token>) -> Box<Node> {
-    // expr = equality
-    equality(tokens)
+    // expr = assign
+    assign(tokens)
+}
+
+fn assign(tokens: &Vec<Token>) -> Box<Node> {
+    // assign = equality ("=" assign)?
+    let mut node = equality(tokens);
+    if tokens[unsafe { TOKEN_POS }].equal("=") {
+        unsafe { TOKEN_POS += 1 };
+        node = Node::new_binary(NodeType::NdAssign, node, assign(tokens));
+    }
+    node
 }
 
 fn equality(tokens: &Vec<Token>) -> Box<Node> {
@@ -199,8 +234,8 @@ fn unary(tokens: &Vec<Token>) -> Box<Node> {
     primary(tokens)
 }
 
-// 解析括号、数字
-// primary = "(" expr ")" | num
+// 解析括号、数字、变量
+// primary = "(" expr ")" | ident｜ num
 fn primary(tokens: &Vec<Token>) -> Box<Node> {
     // "(" expr ")"
     if tokens[unsafe { TOKEN_POS }].equal("(") {
@@ -210,6 +245,20 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
         return node;
     }
 
+    // ident
+    if tokens[unsafe { TOKEN_POS }].kind == TokenType::TkIdent {
+        let name = tokens[unsafe { TOKEN_POS }].charactors;
+        unsafe { TOKEN_POS += 1 };
+        if let Some(var_index) = find_var(name) {
+            return Node::new_varnode(var_index);
+        } else {
+            PROGRAM.lock().unwrap().variables.push(Variable::new(name, 0));
+            let var_index = PROGRAM.lock().unwrap().variables.len() - 1;
+            return Node::new_varnode(var_index);
+        }
+    }
+
+    // num
     if tokens[unsafe { TOKEN_POS }].kind == TokenType::TkNum {
         let node = Node::new_num(tokens[unsafe { TOKEN_POS }].val);
         unsafe { TOKEN_POS += 1 };
@@ -220,11 +269,45 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
 
 static mut TOKEN_POS: usize = 0;
 
-pub fn parse(tokens: &Vec<Token>) -> Vec<Box<Node>> {
-    let mut program = Vec::new();
+#[derive(Clone)]
+pub struct Variable {
+    pub name: &'static str,
+    pub offset: i32,
+}
+
+impl Variable {
+    fn new(name: &'static str, offset: i32) -> Variable {
+        Variable {
+            name,
+            offset,
+        }
+    }
+}
+
+pub struct Function {
+    pub body: Vec<Box<Node>>,
+    pub variables: Vec<Variable>,
+    pub stack_size: i32,
+}
+
+impl Function {
+    pub fn new() -> Function {
+        Function {
+            body: Vec::new(),
+            variables: Vec::new(),
+            stack_size: 0,
+        }
+    }
+
+    pub fn push(&mut self, node: Box<Node>) {
+        self.body.push(node);
+    }
+}
+
+pub fn parse(tokens: &Vec<Token>){
     // program = stmt*
     while tokens[unsafe { TOKEN_POS }].kind != TokenType::TkEof {
-        program.push(stmt(tokens));
+        let node = stmt(tokens);
+        PROGRAM.lock().unwrap().push(node);
     }
-    program
 }
