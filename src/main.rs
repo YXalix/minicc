@@ -3,16 +3,17 @@ mod tokenizer;
 mod codegen;
 mod util;
 mod parse;
+mod types;
 use lazy_static::lazy_static;
 
-use std::{env, sync::Mutex};
+use std::{env, sync::RwLock};
 
 use crate::
     {tokenizer::Token,
     codegen::codegen, parse::Function};
 
 lazy_static! {
-    static ref PROGRAM: Mutex<Function> = Mutex::new(Function::new());
+    static ref PROGRAM: RwLock<Function> = RwLock::new(Function::new());
 }
 
 fn main() {

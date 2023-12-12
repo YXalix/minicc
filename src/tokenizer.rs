@@ -10,6 +10,7 @@ pub enum TokenType {
     TkIdent, // 标识符
     TkPunct, // 操作符如： + -
     TkNum,   // 数字
+    TkKeyword, // 关键字
     TkEof,   // 文件终止符，即文件的最后
 }
 
@@ -18,6 +19,23 @@ pub struct Token {
     pub kind: TokenType,
     pub charactors: &'static str,
     pub val: i32,
+}
+
+pub fn is_keyword(token: &Token) -> bool {
+    static KEYWORDS: [&'static str; 5] = ["return", "if", "else", "for", "while"];
+    if KEYWORDS.contains(&token.charactors) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+pub fn convert_keyword(token: &mut Vec<Token>) {
+    for i in 0..token.len() {
+        if is_keyword(&token[i]) {
+            token[i].kind = TokenType::TkKeyword;
+        }
+    }
 }
 
 impl Token {
@@ -71,6 +89,7 @@ impl Token {
             panic!("invalid character: {}", c);
         }
         tokens.push(Token::new(TokenType::TkEof, "", 0));
+        convert_keyword(&mut tokens);
         tokens
     }
 

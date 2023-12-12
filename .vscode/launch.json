@@ -20,7 +20,7 @@
                 }
             },
             "args": [
-                "a=3; a;"
+                "{ for (;;) {return 3;} return 5; }"
             ],
             "cwd": "${workspaceFolder}"
         },
@@ -42,6 +42,8 @@
             },
             "args": [],
             "cwd": "${workspaceFolder}"
-        }
+        },
+
+
     ]
 }
