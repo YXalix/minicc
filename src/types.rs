@@ -16,6 +16,7 @@ pub enum TypeKind {
 pub struct Type {
     pub kind: TypeKind,
     pub ptr_to: Option<Box<Type>>,
+    pub tok: Option<usize> 
 }
 
 
@@ -24,6 +25,7 @@ impl Type {
         Box::new(Type {
             kind: kind,
             ptr_to: Some(ptr_to),
+            tok: None,
         })
     }
 

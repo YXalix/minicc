@@ -157,30 +157,30 @@ impl Node {
                 self.ty = Some(self.lhs.as_ref().unwrap().get_type());
             },
             // 将节点类型设为 int类型
-            NodeType::NdEq | NodeType::NdNe | NodeType::NdLt | NodeType::NdLe | NodeType::NdNum | NodeType::NdVar => {
+            NodeType::NdEq | NodeType::NdNe | NodeType::NdLt | NodeType::NdLe | NodeType::NdNum => {
                 self.ty = Some(
                     Type::new(TypeKind::TyInt, Box::new(Type {
                         kind: TypeKind::TyInt,
                         ptr_to: None,
+                        tok: None,
                     }))
                 );
+            },
+            // 将节点类型设为 变量的类型
+            NodeType::NdVar => {
+                let var_index = self.var.unwrap();
+                self.ty = Some(PROGRAM.read().unwrap().variables[var_index].ty.as_ref().unwrap().clone());
             },
             // 将节点类型设为 指针，并指向左部的类型
             NodeType::NdAddr => {
                 self.ty = Some(pointer_to(self.lhs.as_ref().unwrap().get_type()));
             },
-            // 节点类型：如果解引用指向的是指针，则为指针指向的类型；否则为int
+            // 节点类型：如果解引用指向的是指针，则为指针指向的类型；否则报错
             NodeType::NdDeref => {
-                if let Some(ty) = self.lhs.as_ref().unwrap().get_type().ptr_to.as_ref() {
-                    self.ty = Some(ty.clone());
-                } else {
-                    self.ty = Some(
-                        Type::new(TypeKind::TyInt, Box::new(Type {
-                            kind: TypeKind::TyInt,
-                            ptr_to: None,
-                        }))
-                    );
+                if ! self.lhs.as_ref().unwrap().is_ptr() {
+                    panic!("invalid pointer dereference");
                 }
+                self.ty = Some(self.lhs.as_ref().unwrap().get_type().ptr_to.as_ref().unwrap().clone());
             },
             _ => {},
         }
@@ -206,8 +206,22 @@ fn find_var(name: &'static str) -> Option<usize> {
     None
 }
 
+// 新增一个变量
+fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
+    let name = tokens[tok.unwrap()].charactors;
+    if let Some(var_index) = find_var(name) {
+        return var_index;
+    }
+    PROGRAM.write().unwrap().variables.push(Variable::new(name, Some(ty)));
+    PROGRAM.read().unwrap().variables.len() - 1
+}
+
 // program = "{" compoundStmt
-// compoundStmt = stmt* "}"
+// compoundStmt = (declaration | stmt)* "}"
+// declaration =
+//    declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+// declspec = "int"
+// declarator = "*"* ident
 // stmt = "return" expr ";"
 //        | "if" "(" expr ")" stmt ("else" stmt)?
 //        | "for" "(" exprStmt expr? ";" expr? ")" stmt
@@ -223,6 +237,77 @@ fn find_var(name: &'static str) -> Option<usize> {
 // mul = unary ("*" unary | "/" unary)*
 // unary = ("+" | "-" | "*" | "&") unary | primary
 // primary = "(" expr ")" | ident | num
+
+
+// declspec = "int"
+// declarator specifier
+fn declspec(tokens: &Vec<Token>) -> Box<Type> {
+    comsume(tokens, "int");
+    Box::new(Type {
+        kind: TypeKind::TyInt,
+        ptr_to: None,
+        tok: None,
+    })
+}
+
+// declarator = "*"* ident
+fn declarator(tokens: &Vec<Token>, mut ty: Box<Type>) -> Box<Type> {
+    // "*"*
+    // 构建所有的（多重）指针
+    while get_cur_token(tokens).equal("*") {
+        skip();
+        ty = pointer_to(ty);
+    }
+
+    if get_cur_token(tokens).kind != TokenType::TkIdent {
+        panic!("expected a variable name");
+    }
+
+    // ident
+    // 变量名
+    ty.tok = Some(unsafe { TOKEN_POS });
+    skip();
+    ty
+}
+
+// declaration =
+//    declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
+fn declaration(tokens: &Vec<Token>) -> Box<Node> {
+    let basety = declspec(tokens);
+    let mut node = Node::new_node(NodeType::NdBloc);
+    // 对变量声明次数计数
+    let mut i = 0;
+
+    // (declarator ("=" expr)? ("," declarator ("=" expr)?)*)?
+    while get_cur_token(tokens).equal(";") == false {
+        // 第1个变量不必匹配 ","
+        if i > 0 {
+            comsume(tokens, ",");
+        }
+        i += 1;
+        // declarator
+        // 声明获取到变量类型，包括变量名
+        let ty = declarator(tokens, basety.clone());
+        let var = new_lvar(tokens, ty.tok, ty.clone());
+
+        // 如果不存在"="则为变量声明，不需要生成节点，已经存储在Locals中了
+        if get_cur_token(tokens).equal("=") == false {
+            continue;
+        }
+
+        // 解析“=”后面的Token
+        let lhs = Node::new_varnode(var);
+        // 解析递归赋值语句
+        skip();
+        let rhs = assign(tokens);
+        let tmp = Node::new_binary(NodeType::NdAssign, lhs, rhs);
+        let tmp = Node::new_unary(NodeType::NdExprStmt, tmp);
+
+        node.body.push(tmp);
+    }
+    comsume(tokens, ";");
+    node
+}
 
 
 fn stmt(tokens: &Vec<Token>) -> Box<Node> {
@@ -293,17 +378,21 @@ fn stmt(tokens: &Vec<Token>) -> Box<Node> {
         return node;
     }
 
-
-
     // exprStmt
     expr_stmt(tokens)
 }
 
+// 解析复合语句
+// compoundStmt = (declaration | stmt)* "}"
 fn compound_stmt(tokens: &Vec<Token>) -> Box<Node> {
-    // compoundStmt = stmt* "}"
     let mut node = Node::new_node(NodeType::NdBloc);
     while get_cur_token(tokens).equal("}") == false {
-        node.body.push(stmt(tokens));
+        // declaration
+        if get_cur_token(tokens).equal("int") {
+            node.body.push(declaration(tokens));
+        } else {
+            node.body.push(stmt(tokens));
+        }
         // 构造完AST后，为节点添加类型信息
         node.add_type();
     }
@@ -527,9 +616,7 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
         if let Some(var_index) = find_var(name) {
             return Node::new_varnode(var_index);
         } else {
-            PROGRAM.write().unwrap().variables.push(Variable::new(name, 0));
-            let var_index = PROGRAM.read().unwrap().variables.len() - 1;
-            return Node::new_varnode(var_index);
+            panic!("undefined variable")
         }
     }
 
@@ -556,13 +643,15 @@ fn skip() {
 pub struct Variable {
     pub name: &'static str,
     pub offset: i32,
+    pub ty: Option<Box<Type>>,
 }
 
 impl Variable {
-    fn new(name: &'static str, offset: i32) -> Variable {
+    fn new(name: &'static str,ty: Option<Box<Type>>) -> Variable {
         Variable {
-            name,
-            offset,
+            name: name,
+            offset: 0,
+            ty: ty,
         }
     }
 }

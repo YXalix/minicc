@@ -22,7 +22,7 @@ pub struct Token {
 }
 
 pub fn is_keyword(token: &Token) -> bool {
-    static KEYWORDS: [&'static str; 5] = ["return", "if", "else", "for", "while"];
+    static KEYWORDS: [&'static str; 6] = ["return", "if", "else", "for", "while","int"];
     if KEYWORDS.contains(&token.charactors) {
         return true;
     } else {

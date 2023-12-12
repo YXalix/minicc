@@ -20,7 +20,7 @@
                 }
             },
             "args": [
-                "{ for (;;) {return 3;} return 5; }"
+                "{int a=3,b=4,a=1;return a+b;}"
             ],
             "cwd": "${workspaceFolder}"
         },
