@@ -1,4 +1,4 @@
-use crate::{tokenizer::{Token, TokenType}, PROGRAM, types::{Type, TypeKind, pointer_to}};
+use crate::{tokenizer::{Token, TokenType}, types::{Type, pointer_to}};
 
 
 #[derive(PartialEq)]
@@ -25,6 +25,8 @@ pub enum NodeType {
     NdFor, // "for" 或 "while"，循环
     NdAddr, // &
     NdDeref, // *
+
+    NdFuncCall, // 函数调用
 }
 
 #[derive(Clone)]
@@ -46,6 +48,10 @@ pub struct Node {
     pub body: Vec<Box<Node>>,
     pub val: Option<i32>,
     pub var: Option<usize>,
+
+    // 函数调用
+    pub funcname: Option<&'static str>, // 函数名
+    pub args: Vec<Box<Node>>, // 参数
 }
 
 impl Node {
@@ -64,6 +70,8 @@ impl Node {
                 body: Vec::new(),
                 val: None,
                 var: None,
+                funcname: None,
+                args: Vec::new(),
             }
         )
     }
@@ -150,6 +158,10 @@ impl Node {
         (self.body).iter_mut().for_each(|temp| {
             temp.add_type();
         });
+        // 访问链表内的所有参数节点以增加类型
+        (self.args).iter_mut().for_each(|temp| {
+            temp.add_type();
+        });
 
         match self.kind {
             // 将节点类型设为 节点左部的类型
@@ -157,19 +169,17 @@ impl Node {
                 self.ty = Some(self.lhs.as_ref().unwrap().get_type());
             },
             // 将节点类型设为 int类型
-            NodeType::NdEq | NodeType::NdNe | NodeType::NdLt | NodeType::NdLe | NodeType::NdNum => {
-                self.ty = Some(
-                    Type::new(TypeKind::TyInt, Box::new(Type {
-                        kind: TypeKind::TyInt,
-                        ptr_to: None,
-                        tok: None,
-                    }))
-                );
+            NodeType::NdEq | NodeType::NdNe | NodeType::NdLt | NodeType::NdLe | NodeType::NdNum | NodeType::NdFuncCall => {
+                self.ty = Some(Type::new_int_type());
             },
             // 将节点类型设为 变量的类型
             NodeType::NdVar => {
                 let var_index = self.var.unwrap();
-                self.ty = Some(PROGRAM.read().unwrap().variables[var_index].ty.as_ref().unwrap().clone());
+                self.ty = unsafe { PROGRAM.last().unwrap().variables[var_index].ty.clone() };
+                
+                
+                
+                Some(unsafe { PROGRAM.last().unwrap().variables[var_index].ty.as_ref().unwrap().clone()});
             },
             // 将节点类型设为 指针，并指向左部的类型
             NodeType::NdAddr => {
@@ -198,7 +208,7 @@ fn comsume(tokens: &Vec<Token>, charactors: &str) {
 }
 
 fn find_var(name: &'static str) -> Option<usize> {
-    for (i, var) in PROGRAM.read().unwrap().variables.iter().enumerate()  {
+    for (i, var) in unsafe { PROGRAM.last().unwrap().variables.iter().enumerate() }  {
         if var.name == name {
             return Some(i);
         }
@@ -212,16 +222,21 @@ fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
     if let Some(var_index) = find_var(name) {
         return var_index;
     }
-    PROGRAM.write().unwrap().variables.push(Variable::new(name, Some(ty)));
-    PROGRAM.read().unwrap().variables.len() - 1
+    unsafe { PROGRAM.last_mut().unwrap().variables.push(Variable::new(name, Some(ty))) };
+    unsafe { PROGRAM.last().unwrap().variables.len() - 1}
 }
 
-// program = "{" compoundStmt
+// program = functionDefinition*
+// functionDefinition = declspec declarator "{" compoundStmt*
+// declspec = "int"
+// declarator = "*"* ident typeSuffix
+// typeSuffix = ("(" funcParams? ")")?
+// funcParams = param ("," param)*
+// param = declspec declarator
+
 // compoundStmt = (declaration | stmt)* "}"
 // declaration =
 //    declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
-// declspec = "int"
-// declarator = "*"* ident
 // stmt = "return" expr ";"
 //        | "if" "(" expr ")" stmt ("else" stmt)?
 //        | "for" "(" exprStmt expr? ";" expr? ")" stmt
@@ -236,21 +251,44 @@ fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 // add = mul ("+" mul | "-" mul)*
 // mul = unary ("*" unary | "/" unary)*
 // unary = ("+" | "-" | "*" | "&") unary | primary
-// primary = "(" expr ")" | ident | num
+// primary = "(" expr ")" | ident func-args? | num
 
 
 // declspec = "int"
 // declarator specifier
 fn declspec(tokens: &Vec<Token>) -> Box<Type> {
     comsume(tokens, "int");
-    Box::new(Type {
-        kind: TypeKind::TyInt,
-        ptr_to: None,
-        tok: None,
-    })
+    Type::new_int_type()
 }
 
-// declarator = "*"* ident
+// typeSuffix = ("(" funcParams? ")")?
+// funcParams = param ("," param)*
+// param = declspec declarator
+fn type_suffix(tokens: &Vec<Token>, ty: Box<Type>) -> Box<Type> {
+    // ("(" funcParams? ")")?
+    if get_cur_token(tokens).equal("(") {
+        skip();
+        let mut params = Vec::new();
+        let mut flag = 0;
+        while ! get_cur_token(tokens).equal(")") {
+            if flag > 0 {
+                comsume(tokens, ",");
+            }
+            flag += 1;
+            let basety = declspec(tokens);
+            let declarty = declarator(tokens, basety);
+            params.push(declarty);
+        }
+        comsume(tokens, ")");
+        let mut new_ty = Type::new_func_type(ty);
+        new_ty.params = params;
+        return new_ty;
+    }
+    ty
+}
+
+
+// declarator = "*"* ident typeSuffix
 fn declarator(tokens: &Vec<Token>, mut ty: Box<Type>) -> Box<Type> {
     // "*"*
     // 构建所有的（多重）指针
@@ -263,10 +301,15 @@ fn declarator(tokens: &Vec<Token>, mut ty: Box<Type>) -> Box<Type> {
         panic!("expected a variable name");
     }
 
-    // ident
-    // 变量名
-    ty.tok = Some(unsafe { TOKEN_POS });
+    let tok_index = Some(unsafe { TOKEN_POS });
     skip();
+
+    // typeSuffix
+    ty = type_suffix(tokens, ty);
+
+    // ident
+    // 变量名 或 函数名
+    ty.tok = tok_index;
     ty
 }
 
@@ -598,8 +641,29 @@ fn unary(tokens: &Vec<Token>) -> Box<Node> {
     primary(tokens)
 }
 
+
+
+// 解析函数调用
+// funcall = ident "(" (assign ("," assign)*)? ")"
+fn funcall(tokens: &Vec<Token>, name: &'static str) -> Box<Node> {
+    let mut node = Node::new_node(NodeType::NdFuncCall);
+    node.funcname = Some(name);
+    comsume(tokens, "(");
+    if get_cur_token(tokens).equal(")") == false {
+        node.args.push(assign(tokens));
+        while get_cur_token(tokens).equal(",") {
+            skip();
+            node.args.push(assign(tokens));
+        }
+    }
+    comsume(tokens, ")");
+    node
+}
+
+
+
 // 解析括号、数字、变量
-// primary = "(" expr ")" | ident｜ num
+// primary = "(" expr ")" | ident func-args? | num
 fn primary(tokens: &Vec<Token>) -> Box<Node> {
     // "(" expr ")"
     if get_cur_token(tokens).equal("(") {
@@ -609,10 +673,17 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
         return node;
     }
 
-    // ident
+    // ident args?
     if get_cur_token(tokens).kind == TokenType::TkIdent {
         let name = get_cur_token(tokens).charactors;
         skip();
+
+        // 函数调用
+        // args = "(" ")"
+        if get_cur_token(tokens).equal("(") {
+            return funcall(tokens, name);
+        }
+
         if let Some(var_index) = find_var(name) {
             return Node::new_varnode(var_index);
         } else {
@@ -627,6 +698,38 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
         return node;
     }
     panic!("unexpected token: {:?}", get_cur_token(tokens));
+}
+
+
+// 将形参添加到局部变量
+fn create_param_lvars(tokens: &Vec<Token>, params: Vec<Box<Type>>) {
+    params.iter().rev().for_each(|ty|{
+        new_lvar(tokens, ty.tok, ty.clone());
+    });
+}
+
+
+
+// functionDefinition = declspec declarator "{" compoundStmt*
+fn function(tokens: &Vec<Token>) {
+    let func = Function::new();
+    unsafe { PROGRAM.push(func) };
+
+    // declspec
+    let ty = declspec(tokens);
+    let ty = declarator(tokens, ty);
+
+    // 函数名
+    let name = tokens[ty.tok.unwrap()].charactors;
+    unsafe { PROGRAM.last_mut().unwrap().funcname = name };
+    // 函数参数
+    create_param_lvars(tokens, ty.params);
+    unsafe { PROGRAM.last_mut().unwrap().params = PROGRAM.last().unwrap().variables.clone() };
+
+
+    comsume(tokens, "{");
+    // 函数体存储语句的AST，Locals存储变量
+    unsafe { PROGRAM.last_mut().unwrap().body.push(compound_stmt(tokens)) };
 }
 
 static mut TOKEN_POS: usize = 0;
@@ -659,7 +762,9 @@ impl Variable {
 pub struct Function {
     pub body: Vec<Box<Node>>,
     pub variables: Vec<Variable>,
+    pub params: Vec<Variable>,
     pub stack_size: i32,
+    pub funcname: &'static str,
 }
 
 impl Function {
@@ -667,21 +772,20 @@ impl Function {
         Function {
             body: Vec::new(),
             variables: Vec::new(),
+            params: Vec::new(),
             stack_size: 0,
+            funcname: "",
         }
-    }
-
-    pub fn push(&mut self, node: Box<Node>) {
-        self.body.push(node);
     }
 }
 
+static mut PROGRAM:Vec<Function> = Vec::new();
 
-pub fn parse(tokens: &Vec<Token>){
-    // program = "{" compoundStmt
-
-    // "{"
-    comsume(tokens, "{");
-    let node = compound_stmt(tokens);
-    PROGRAM.write().unwrap().push(node);
+// 语法解析入口函数
+// program = functionDefinition*
+pub fn parse(tokens: &Vec<Token>) -> &mut Vec<Function> {
+    while get_cur_token(tokens).kind != TokenType::TkEof {
+        function(tokens);
+    }
+    unsafe { &mut PROGRAM }
 }

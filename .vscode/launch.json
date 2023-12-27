@@ -20,7 +20,7 @@
                 }
             },
             "args": [
-                "{int a=3,b=4,a=1;return a+b;}"
+                "int main() { return add2(3,4); } int add2(int x, int y) { return x+y; }"
             ],
             "cwd": "${workspaceFolder}"
         },

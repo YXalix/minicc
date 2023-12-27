@@ -4,17 +4,12 @@ mod codegen;
 mod util;
 mod parse;
 mod types;
-use lazy_static::lazy_static;
 
-use std::{env, sync::RwLock};
+use std::env;
 
 use crate::
     {tokenizer::Token,
-    codegen::codegen, parse::Function};
-
-lazy_static! {
-    static ref PROGRAM: RwLock<Function> = RwLock::new(Function::new());
-}
+    codegen::codegen};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -24,6 +19,6 @@ fn main() {
     }
     let p = args[1].clone().leak();
     let tokens = Token::tokenize(p);
-    parse::parse(&tokens);
-    codegen();
+    let mut program = parse::parse(&tokens);
+    codegen(&mut program);
 }
