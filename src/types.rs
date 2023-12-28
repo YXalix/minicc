@@ -7,56 +7,50 @@
 
 // 类型种类
 #[derive(Clone)]
+#[derive(PartialEq)]
 pub enum TypeKind {
     TyInt, // 整数类型
     TyPtr, // 指针类型
-    YyFunc, // 函数类型
+    TyFunc, // 函数类型
+    TyArray, // 数组类型
 }
 
 #[derive(Clone)]
 pub struct Type {
     pub kind: TypeKind,
-    pub ptr_to: Option<Box<Type>>,
+    pub base: Option<Box<Type>>,
     pub return_ty: Option<Box<Type>>, // 函数返回的类型
     pub params: Vec<Box<Type>>, // 形参
     pub tok: Option<usize>,
+
+    pub array_len: Option<usize>, // 数组长度
+    pub size: usize, // 大小, sizeof 的结果
 }
 
 
 impl Type {
-    pub fn new(kind: TypeKind, ptr_to: Box<Type>) -> Box<Type> {
+    pub fn new(kind: TypeKind, base: Option<Box<Type>>) -> Box<Type> {
         Box::new(Type {
             kind: kind,
-            ptr_to: Some(ptr_to),
+            base: base,
             return_ty: None,
             params: Vec::new(),
             tok: None,
+            array_len: None,
+            size: 8,
         })
     }
 
     pub fn new_int_type() -> Box<Type> {
-        Box::new(Type {
-            kind: TypeKind::TyInt,
-            ptr_to: None,
-            return_ty: None,
-            params: Vec::new(),
-            tok: None,
-        })
-    }
-
-    pub fn new_func_type(return_ty: Box<Type>) -> Box<Type> {
-        Box::new(Type {
-            kind: TypeKind::YyFunc,
-            ptr_to: None,
-            return_ty: Some(return_ty),
-            params: Vec::new(),
-            tok: None,
-        })
+        let mut temp = Type::new(TypeKind::TyInt, None);
+        temp.size = 8;
+        temp
     }
 
     pub fn is_ptr(&self) -> bool {
         match self.kind {
             TypeKind::TyPtr => true,
+            TypeKind::TyArray => true,
             _ => false,
         }
     }
@@ -68,9 +62,17 @@ impl Type {
         }
     }
 
+    pub fn array_of(base: Box<Type>, len: usize) -> Box<Type> {
+        let size = base.size;
+        let mut ty = Type::new(TypeKind::TyArray, Some(base));
+        ty.array_len = Some(len);
+        ty.size = size * len;
+        ty
+    }
+
 }
 
 pub fn pointer_to(base: Box<Type>) -> Box<Type> {
-    Type::new(TypeKind::TyPtr, base)
+    Type::new(TypeKind::TyPtr, Some(base))
 }
 

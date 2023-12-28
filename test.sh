@@ -162,5 +162,33 @@ assert 7 'int main() { return add2(3,4); } int add2(int x, int y) { return x+y; 
 assert 1 'int main() { return sub2(4,3); } int sub2(int x, int y) { return x-y; }'
 assert 55 'int main() { return fib(9); } int fib(int x) { if (x<=1) return 1; return fib(x-1) + fib(x-2); }'
 
+# [27] 支持一维数组
+assert 3 'int main() { int x[2]; int *y=&x; *y=3; return *x; }'
+assert 3 'int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *x; }'
+assert 4 'int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *(x+1); }'
+assert 5 'int main() { int x[3]; *x=3; *(x+1)=4; *(x+2)=5; return *(x+2); }'
+
+# [28] 支持多维数组
+assert 0 'int main() { int x[2][3]; int *y=x; *y=0; return **x; }'
+assert 1 'int main() { int x[2][3]; int *y=x; *(y+1)=1; return *(*x+1); }'
+assert 2 'int main() { int x[2][3]; int *y=x; *(y+2)=2; return *(*x+2); }'
+assert 3 'int main() { int x[2][3]; int *y=x; *(y+3)=3; return **(x+1); }'
+assert 4 'int main() { int x[2][3]; int *y=x; *(y+4)=4; return *(*(x+1)+1); }'
+assert 5 'int main() { int x[2][3]; int *y=x; *(y+5)=5; return *(*(x+1)+2); }'
+
+# [29] 支持 [] 操作符
+assert 3 'int main() { int x[3]; *x=3; x[1]=4; x[2]=5; return *x; }'
+assert 4 'int main() { int x[3]; *x=3; x[1]=4; x[2]=5; return *(x+1); }'
+assert 5 'int main() { int x[3]; *x=3; x[1]=4; x[2]=5; return *(x+2); }'
+assert 5 'int main() { int x[3]; *x=3; x[1]=4; x[2]=5; return *(x+2); }'
+assert 5 'int main() { int x[3]; *x=3; x[1]=4; 2[x]=5; return *(x+2); }'
+
+assert 0 'int main() { int x[2][3]; int *y=x; y[0]=0; return x[0][0]; }'
+assert 1 'int main() { int x[2][3]; int *y=x; y[1]=1; return x[0][1]; }'
+assert 2 'int main() { int x[2][3]; int *y=x; y[2]=2; return x[0][2]; }'
+assert 3 'int main() { int x[2][3]; int *y=x; y[3]=3; return x[1][0]; }'
+assert 4 'int main() { int x[2][3]; int *y=x; y[4]=4; return x[1][1]; }'
+assert 5 'int main() { int x[2][3]; int *y=x; y[5]=5; return x[1][2]; }'
+
 # 如果运行正常未提前退出，程序将显示OK
 echo OK

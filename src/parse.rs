@@ -1,4 +1,4 @@
-use crate::{tokenizer::{Token, TokenType}, types::{Type, pointer_to}};
+use crate::{tokenizer::{Token, TokenType}, types::{Type, pointer_to, TypeKind}};
 
 
 #[derive(PartialEq)]
@@ -165,7 +165,13 @@ impl Node {
 
         match self.kind {
             // 将节点类型设为 节点左部的类型
-            NodeType::NdAdd | NodeType::NdSub | NodeType::NdMul | NodeType::NdDiv | NodeType::NdNeg | NodeType::NdAssign => {
+            NodeType::NdAdd | NodeType::NdSub | NodeType::NdMul | NodeType::NdDiv | NodeType::NdNeg => {
+                self.ty = Some(self.lhs.as_ref().unwrap().get_type());
+            },
+            NodeType::NdAssign => {
+                if self.lhs.as_ref().unwrap().get_type().kind == TypeKind::TyArray {
+                    panic!("not an lvalue");
+                }
                 self.ty = Some(self.lhs.as_ref().unwrap().get_type());
             },
             // 将节点类型设为 int类型
@@ -175,22 +181,26 @@ impl Node {
             // 将节点类型设为 变量的类型
             NodeType::NdVar => {
                 let var_index = self.var.unwrap();
-                self.ty = unsafe { PROGRAM.last().unwrap().variables[var_index].ty.clone() };
-                
-                
-                
+                let ty = unsafe { PROGRAM.last().unwrap().variables[var_index].ty.clone() };
+                self.ty = ty;
                 Some(unsafe { PROGRAM.last().unwrap().variables[var_index].ty.as_ref().unwrap().clone()});
             },
             // 将节点类型设为 指针，并指向左部的类型
             NodeType::NdAddr => {
+                // 左部如果是数组, 则为指向数组基类的指针
+                if self.lhs.as_ref().unwrap().get_type().kind == TypeKind::TyArray {
+                    self.ty = Some(pointer_to(self.lhs.as_ref().unwrap().get_type().base.as_ref().unwrap().clone()));
+                    return;
+                }
                 self.ty = Some(pointer_to(self.lhs.as_ref().unwrap().get_type()));
             },
             // 节点类型：如果解引用指向的是指针，则为指针指向的类型；否则报错
             NodeType::NdDeref => {
-                if ! self.lhs.as_ref().unwrap().is_ptr() {
+                // 如果不存在基类, 则无法解引用
+                if self.lhs.as_ref().unwrap().get_type().base.is_none() {
                     panic!("invalid pointer dereference");
                 }
-                self.ty = Some(self.lhs.as_ref().unwrap().get_type().ptr_to.as_ref().unwrap().clone());
+                self.ty = Some(self.lhs.as_ref().unwrap().get_type().base.as_ref().unwrap().clone());
             },
             _ => {},
         }
@@ -230,8 +240,8 @@ fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 // functionDefinition = declspec declarator "{" compoundStmt*
 // declspec = "int"
 // declarator = "*"* ident typeSuffix
-// typeSuffix = ("(" funcParams? ")")?
-// funcParams = param ("," param)*
+// typeSuffix = "(" funcParams | "[" num "]" typeSuffix | ε
+// funcParams = (param ("," param)*)? ")"
 // param = declspec declarator
 
 // compoundStmt = (declaration | stmt)* "}"
@@ -250,7 +260,8 @@ fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 // relational = add ("<" add | "<=" add | ">" add | ">=" add)*
 // add = mul ("+" mul | "-" mul)*
 // mul = unary ("*" unary | "/" unary)*
-// unary = ("+" | "-" | "*" | "&") unary | primary
+// unary = ("+" | "-" | "*" | "&") unary | postfix
+// postfix = primary ("[" expr "]")*
 // primary = "(" expr ")" | ident func-args? | num
 
 
@@ -261,28 +272,38 @@ fn declspec(tokens: &Vec<Token>) -> Box<Type> {
     Type::new_int_type()
 }
 
-// typeSuffix = ("(" funcParams? ")")?
-// funcParams = param ("," param)*
+// funcParams = (param ("," param)*)? ")"
 // param = declspec declarator
-fn type_suffix(tokens: &Vec<Token>, ty: Box<Type>) -> Box<Type> {
-    // ("(" funcParams? ")")?
+fn func_params(tokens: &Vec<Token>) -> Vec<Box<Type>> {
+    let mut params = Vec::new();
+    let mut flag = 0;
+    while get_cur_token(tokens).equal(")") == false {
+        if flag > 0 {
+            comsume(tokens, ",");
+        }
+        flag += 1;
+        let basety = declspec(tokens);
+        let declarty = declarator(tokens, basety);
+        params.push(declarty);
+    }
+    params
+}
+
+
+// typeSuffix = "(" funcParams | "[" num "]" typeSuffix | ε
+fn type_suffix(tokens: &Vec<Token>, mut ty: Box<Type>) -> Box<Type> {
     if get_cur_token(tokens).equal("(") {
         skip();
-        let mut params = Vec::new();
-        let mut flag = 0;
-        while ! get_cur_token(tokens).equal(")") {
-            if flag > 0 {
-                comsume(tokens, ",");
-            }
-            flag += 1;
-            let basety = declspec(tokens);
-            let declarty = declarator(tokens, basety);
-            params.push(declarty);
-        }
+        ty.kind = TypeKind::TyFunc;
+        ty.params = func_params(tokens);
         comsume(tokens, ")");
-        let mut new_ty = Type::new_func_type(ty);
-        new_ty.params = params;
-        return new_ty;
+    } else if get_cur_token(tokens).equal("[") {
+        skip();
+        let array_len = get_num(tokens);
+        skip();
+        comsume(tokens, "]");
+        ty = type_suffix(tokens, ty);
+        ty = Type::array_of(ty, array_len as usize);
     }
     ty
 }
@@ -535,12 +556,11 @@ fn new_add(mut lhs: Box<Node>, mut rhs: Box<Node>) -> Box<Node> {
 
     // 将 num + ptr 转换为 ptr + num
     if lhs.is_integer() && rhs.is_ptr() {
-        // num + ptr
-        let temp = Node::new_binary(NodeType::NdMul, lhs, Node::new_num(8));
-        return Node::new_binary(NodeType::NdAdd, temp, rhs);
+        return new_add(rhs, lhs);
     } else {
         // ptr + num
-        let temp = Node::new_binary(NodeType::NdMul, rhs, Node::new_num(8));
+        // 指针加法，ptr+1，1不是1个字节而是1个元素的空间，所以需要×Size操作
+        let temp = Node::new_binary(NodeType::NdMul, rhs, Node::new_num(lhs.get_type().base.unwrap().size as i32));
         return Node::new_binary(NodeType::NdAdd, lhs, temp);
     }
 }
@@ -550,6 +570,7 @@ fn new_sub(mut lhs: Box<Node>, mut rhs: Box<Node>) -> Box<Node> {
     // 为左右部添加类型
     lhs.add_type();
     rhs.add_type();
+    let size = lhs.get_type().size;
     // num - num
     if lhs.is_integer() && rhs.is_integer() {
         return Node::new_binary(NodeType::NdSub, lhs, rhs);
@@ -557,7 +578,7 @@ fn new_sub(mut lhs: Box<Node>, mut rhs: Box<Node>) -> Box<Node> {
 
     // ptr - num
     if lhs.is_ptr() && rhs.is_integer() {
-        let temp = Node::new_binary(NodeType::NdMul, rhs.clone(), Node::new_num(8));
+        let temp = Node::new_binary(NodeType::NdMul, rhs.clone(), Node::new_num(size as i32));
         let mut nd = Node::new_binary(NodeType::NdSub, lhs.clone(), temp);
         // 节点类型为指针
         nd.ty = Some(lhs.get_type());
@@ -567,7 +588,7 @@ fn new_sub(mut lhs: Box<Node>, mut rhs: Box<Node>) -> Box<Node> {
     // ptr - ptr
     if lhs.is_ptr() && rhs.is_ptr() {
         let temp = Node::new_binary(NodeType::NdSub, lhs, rhs);
-        return Node::new_binary(NodeType::NdDiv, temp, Node::new_num(8));
+        return Node::new_binary(NodeType::NdDiv, temp, Node::new_num(size as i32));
     }
     panic!("invalid operands for num - ptr");
 }
@@ -611,7 +632,7 @@ fn mul(tokens: &Vec<Token>) -> Box<Node> {
 }
 
 // 解析一元运算
-// unary = ("+" | "-" | "*" | "&") unary | primary
+// unary = ("+" | "-" | "*" | "&") unary | postfix
 fn unary(tokens: &Vec<Token>) -> Box<Node> {
     // "+" unary
     if get_cur_token(tokens).equal("+") {
@@ -637,8 +658,24 @@ fn unary(tokens: &Vec<Token>) -> Box<Node> {
         return Node::new_unary(NodeType::NdDeref, unary(tokens));
     }
 
-    // primary
-    primary(tokens)
+    // postfix
+    postfix(tokens)
+}
+
+// postfix = primary ("[" expr "]")*
+fn postfix(tokens: &Vec<Token>) -> Box<Node> {
+    let mut node = primary(tokens);
+    loop {
+        // "[" expr "]"
+        if get_cur_token(tokens).equal("[") {
+            skip();
+            let idx = expr(tokens);
+            comsume(tokens, "]");
+            node = Node::new_unary(NodeType::NdDeref, new_add(node, idx));
+            continue;
+        }
+        return node;
+    }
 }
 
 
@@ -740,6 +777,14 @@ fn get_cur_token(tokens: &Vec<Token>) -> &Token {
 
 fn skip() {
     unsafe { TOKEN_POS += 1 };
+}
+
+fn get_num(tokens: &Vec<Token>) -> i32 {
+    let tok = get_cur_token(tokens);
+    if tok.kind != TokenType::TkNum {
+        panic!("not a number token");
+    }
+    tok.val
 }
 
 #[derive(Clone)]

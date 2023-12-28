@@ -1,4 +1,4 @@
-use crate::{parse::{NodeType, Node, Function}, util::align_to};
+use crate::{parse::{NodeType, Node, Function}, util::align_to, types::{Type, TypeKind}};
 
 
 
@@ -36,21 +36,40 @@ fn pop(reg: &str){
 // 根据变量的链表计算出偏移量
 fn assign_lvar_offsets(program: &mut Vec<Function>) {
     for func in program {
-        let mut offset = 0;
+        let mut offset:i32 = 0;
         func.variables.iter_mut().rev().for_each(|var| {
-            offset += 8;
-            var.offset = -offset;
+            // 每个变量分配空间
+            offset += var.ty.as_ref().unwrap().size as i32;
+            var.offset = - offset;
         });
         func.stack_size = align_to(offset, 16);
 
         offset = 0;
         func.params.iter_mut().for_each(|var| {
-            offset += 8;
-            var.offset = -offset;
+            offset += var.ty.as_ref().unwrap().size as i32;
+            var.offset = - offset;
         });
 
 
     }
+}
+
+// 加载a0指向的值
+fn load(ty: &Box<Type>){
+    match ty.kind {
+        TypeKind::TyArray => {},
+        _ => {
+            println!("  # 加载a0指向的值");
+            println!("  ld a0, 0(a0)");
+        },
+    }
+}
+
+// 将栈顶值(为一个地址)存入a0
+fn store(){
+    pop("a1");
+    println!("  # 将a0的值, 写入到a1中存放的地址");
+    println!("  sd a0, 0(a1)");
 }
 
 // 计算给定节点的绝对地址
@@ -87,17 +106,15 @@ fn genexpr(nd: &Box<Node>, func: &Function) {
         },
         NodeType::NdVar => {
             gen_lval(nd, func);
-            println!("  # 将变量{}的值加载到a0中", func.variables[nd.var.unwrap()].name);
-            println!("  ld a0, 0(a0)");
+            // load(&func.variables[nd.var.unwrap()].ty.as_ref().unwrap());
+            load(&nd.ty.as_ref().unwrap());
             return;
         },
         NodeType::NdAssign => {
             gen_lval(nd.lhs.as_ref().unwrap(), func);
             push();
             genexpr(nd.rhs.as_ref().unwrap(), func);
-            pop("a1");
-            println!("  # 将a0的值, 写入到a1中存放的地址");
-            println!("  sd a0, 0(a1)");
+            store();
             return;
         },
         NodeType::NdAddr => {
@@ -106,7 +123,7 @@ fn genexpr(nd: &Box<Node>, func: &Function) {
         },
         NodeType::NdDeref => {
             genexpr(nd.lhs.as_ref().unwrap(), func);
-            println!("  ld a0, 0(a0)");
+            load(&nd.ty.as_ref().unwrap());
             return;
         },
         // 函数调用
