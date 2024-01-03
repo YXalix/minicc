@@ -1,9 +1,84 @@
 use crate::{tokenizer::{Token, TokenType}, types::{Type, pointer_to, TypeKind}};
 
 
+// 语法解析入口函数
+// program = (functionDefinition | globalVariable)*
+pub fn parse(tokens: &Vec<Token>) -> &mut Vec<Obj> {
+    while get_cur_token(tokens).kind != TokenType::TkEof {
+        // declspec
+        let ty = declspec(tokens);
+        // 函数
+        if is_function(tokens) {
+            function(tokens, ty);
+            continue;
+        }
+        // 全局变量
+        global_variable(tokens, ty);
+    }
+    unsafe { &mut GLOBALS }
+}
+
+static mut TOKEN_POS: usize = 0;
+
+fn get_cur_token(tokens: &Vec<Token>) -> &Token {
+    &tokens[unsafe { TOKEN_POS }]
+}
+
+fn skip() {
+    unsafe { TOKEN_POS += 1 };
+}
+
+fn get_num(tokens: &Vec<Token>) -> i32 {
+    let tok = get_cur_token(tokens);
+    if tok.kind != TokenType::TkNum {
+        panic!("not a number token");
+    }
+    tok.val
+}
+
+
+static mut GLOBALS:Vec<Obj> = Vec::new();
+
+#[derive(Clone)]
+pub struct Obj{
+    pub name: &'static str,         // 变量名
+    pub ty: Option<Box<Type>>,      // 变量类型
+    pub is_local: bool,             // 是否为局部变量
+
+    // 局部变量
+    pub offset: i32,                // 偏移量
+
+    // 函数 或 全局变量
+    pub is_function: bool,          // 是否为函数
+    // 函数
+    pub params: Vec<Obj>,           // 参数
+
+    pub body: Vec<Box<Node>>,       // 函数体
+    pub locals: Vec<Obj>,           // 局部变量
+    pub stack_size: i32,            // 栈大小
+}
+
+impl Obj {
+    pub fn new() -> Obj {
+        Obj {
+            name: "",
+            ty: None,
+            is_local: false,
+            offset: 0,
+            is_function: false,
+            params: Vec::new(),
+            body: Vec::new(),
+            locals: Vec::new(),
+            stack_size: 0,
+        }
+    }
+
+
+}
+
+
 #[derive(PartialEq)]
 #[derive(Debug, Clone)]
-
 // AST的节点种类
 pub enum NodeType {
     NdAdd,  // +
@@ -25,7 +100,6 @@ pub enum NodeType {
     NdFor, // "for" 或 "while"，循环
     NdAddr, // &
     NdDeref, // *
-
     NdFuncCall, // 函数调用
 }
 
@@ -48,6 +122,7 @@ pub struct Node {
     pub body: Vec<Box<Node>>,
     pub val: Option<i32>,
     pub var: Option<usize>,
+    pub is_gobal: bool,
 
     // 函数调用
     pub funcname: Option<&'static str>, // 函数名
@@ -72,6 +147,7 @@ impl Node {
                 var: None,
                 funcname: None,
                 args: Vec::new(),
+                is_gobal: false,
             }
         )
     }
@@ -181,9 +257,14 @@ impl Node {
             // 将节点类型设为 变量的类型
             NodeType::NdVar => {
                 let var_index = self.var.unwrap();
-                let ty = unsafe { PROGRAM.last().unwrap().variables[var_index].ty.clone() };
-                self.ty = ty;
-                Some(unsafe { PROGRAM.last().unwrap().variables[var_index].ty.as_ref().unwrap().clone()});
+                if self.is_gobal {
+                    let ty = unsafe { GLOBALS[var_index].ty.clone()};
+                    self.ty = ty;
+                }else {
+                    let ty = unsafe { GLOBALS.last().unwrap().locals[var_index].ty.clone() };
+                    self.ty = ty;
+                    // Some(unsafe { GLOBALS.last().unwrap().locals[var_index].ty.as_ref().unwrap().clone()});
+                }
             },
             // 将节点类型设为 指针，并指向左部的类型
             NodeType::NdAddr => {
@@ -217,10 +298,19 @@ fn comsume(tokens: &Vec<Token>, charactors: &str) {
     }
 }
 
-fn find_var(name: &'static str) -> Option<usize> {
-    for (i, var) in unsafe { PROGRAM.last().unwrap().variables.iter().enumerate() }  {
+fn find_var(name: &'static str) -> Option<(usize, bool)> {
+    // 查找Locals变量中是否存在同名变量
+    if let Some(obj) = unsafe { GLOBALS.last() } {
+        for (i, var) in obj.locals.iter().enumerate()  {
+            if var.name == name {
+                return Some((i, false));
+            }
+        }
+    }
+    // 查找Globals变量中是否存在同名变量
+    for (i, var) in unsafe { GLOBALS.iter().enumerate() } {
         if var.name == name {
-            return Some(i);
+            return Some((i, true));
         }
     }
     None
@@ -229,14 +319,35 @@ fn find_var(name: &'static str) -> Option<usize> {
 // 新增一个变量
 fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
     let name = tokens[tok.unwrap()].charactors;
-    if let Some(var_index) = find_var(name) {
+    if let Some((var_index,_)) = find_var(name) {
         return var_index;
     }
-    unsafe { PROGRAM.last_mut().unwrap().variables.push(Variable::new(name, Some(ty))) };
-    unsafe { PROGRAM.last().unwrap().variables.len() - 1}
+    let mut obj = Obj::new();
+    obj.name = name;
+    obj.ty = Some(ty);
+    unsafe { GLOBALS.last_mut().unwrap().locals.push(obj) };
+    unsafe { GLOBALS.last().unwrap().locals.len() - 1}
 }
 
-// program = functionDefinition*
+// 新增一个全局变量
+fn new_gvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
+    let name = tokens[tok.unwrap()].charactors;
+    if let Some((var_index, is_gobal)) = find_var(name) {
+        if is_gobal {
+            return var_index;
+        }
+    }
+    let mut obj = Obj::new();
+    obj.name = name;
+    obj.ty = Some(ty);
+    obj.is_local = false;
+    obj.is_function = false;
+    unsafe { GLOBALS.push(obj) };
+    unsafe { GLOBALS.len() - 1}
+}
+
+
+// GLOBALS = functionDefinition*
 // functionDefinition = declspec declarator "{" compoundStmt*
 // declspec = "int"
 // declarator = "*"* ident typeSuffix
@@ -262,7 +373,7 @@ fn new_lvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 // mul = unary ("*" unary | "/" unary)*
 // unary = ("+" | "-" | "*" | "&") unary | postfix
 // postfix = primary ("[" expr "]")*
-// primary = "(" expr ")" | ident func-args? | num
+// primary = "(" expr ")" | "sizeof" unary | ident funcArgs? | num
 
 
 // declspec = "int"
@@ -700,7 +811,7 @@ fn funcall(tokens: &Vec<Token>, name: &'static str) -> Box<Node> {
 
 
 // 解析括号、数字、变量
-// primary = "(" expr ")" | ident func-args? | num
+// primary = "(" expr ")" | "sizeof" unary | ident funcArgs? | num
 fn primary(tokens: &Vec<Token>) -> Box<Node> {
     // "(" expr ")"
     if get_cur_token(tokens).equal("(") {
@@ -708,6 +819,14 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
         let node = expr(tokens);
         comsume(tokens, ")");
         return node;
+    }
+
+    // "sizeof" unary
+    if get_cur_token(tokens).equal("sizeof") {
+        comsume(tokens, "sizeof");
+        let mut node = unary(tokens);
+        node.add_type();
+        return Node::new_num(node.ty.unwrap().size as i32);
     }
 
     // ident args?
@@ -721,8 +840,10 @@ fn primary(tokens: &Vec<Token>) -> Box<Node> {
             return funcall(tokens, name);
         }
 
-        if let Some(var_index) = find_var(name) {
-            return Node::new_varnode(var_index);
+        if let Some((var_index, is_gobal)) = find_var(name) {
+            let mut tmp = Node::new_varnode(var_index);
+            tmp.is_gobal = is_gobal;
+            return tmp;
         } else {
             panic!("undefined variable")
         }
@@ -745,92 +866,55 @@ fn create_param_lvars(tokens: &Vec<Token>, params: Vec<Box<Type>>) {
     });
 }
 
+// 区分 函数还是全局变量
+fn is_function(tokens: &Vec<Token>) -> bool {
+    // 记录当前Token位置
+    let index = unsafe { TOKEN_POS };
+    if get_cur_token(tokens).equal(";") {
+        return false;
+    }
+    // 虚设变量，用于调用declarator
+    let ty = Type::new_int_type();
+    let ty = declarator(tokens, ty);
+    // 恢复Token位置
+    unsafe { TOKEN_POS = index };
+    return ty.kind == TypeKind::TyFunc;
+}  
+
+// 构造全局变量
+fn global_variable(tokens: &Vec<Token>, basety: Box<Type>) {
+    let mut first = true;
+    while get_cur_token(tokens).equal(";") == false{
+        if first == false {
+            comsume(tokens, ",");
+        }
+        first = false;
+        let ty = declarator(tokens, basety.clone());
+        new_gvar(tokens, ty.tok, ty);
+    }
+    comsume(tokens, ";");
+
+}
+
 
 
 // functionDefinition = declspec declarator "{" compoundStmt*
-fn function(tokens: &Vec<Token>) {
-    let func = Function::new();
-    unsafe { PROGRAM.push(func) };
-
-    // declspec
-    let ty = declspec(tokens);
-    let ty = declarator(tokens, ty);
+fn function(tokens: &Vec<Token>, basety: Box<Type>) {
+    let mut func = Obj::new();
+    func.is_function = true;
+    unsafe { GLOBALS.push(func) };
+    let ty = declarator(tokens, basety);
 
     // 函数名
     let name = tokens[ty.tok.unwrap()].charactors;
-    unsafe { PROGRAM.last_mut().unwrap().funcname = name };
+    unsafe { GLOBALS.last_mut().unwrap().name = name };
     // 函数参数
     create_param_lvars(tokens, ty.params);
-    unsafe { PROGRAM.last_mut().unwrap().params = PROGRAM.last().unwrap().variables.clone() };
+    unsafe { GLOBALS.last_mut().unwrap().params = GLOBALS.last().unwrap().locals.clone() };
 
 
     comsume(tokens, "{");
     // 函数体存储语句的AST，Locals存储变量
-    unsafe { PROGRAM.last_mut().unwrap().body.push(compound_stmt(tokens)) };
-}
-
-static mut TOKEN_POS: usize = 0;
-
-fn get_cur_token(tokens: &Vec<Token>) -> &Token {
-    &tokens[unsafe { TOKEN_POS }]
-}
-
-fn skip() {
-    unsafe { TOKEN_POS += 1 };
-}
-
-fn get_num(tokens: &Vec<Token>) -> i32 {
-    let tok = get_cur_token(tokens);
-    if tok.kind != TokenType::TkNum {
-        panic!("not a number token");
-    }
-    tok.val
-}
-
-#[derive(Clone)]
-pub struct Variable {
-    pub name: &'static str,
-    pub offset: i32,
-    pub ty: Option<Box<Type>>,
-}
-
-impl Variable {
-    fn new(name: &'static str,ty: Option<Box<Type>>) -> Variable {
-        Variable {
-            name: name,
-            offset: 0,
-            ty: ty,
-        }
-    }
-}
-
-pub struct Function {
-    pub body: Vec<Box<Node>>,
-    pub variables: Vec<Variable>,
-    pub params: Vec<Variable>,
-    pub stack_size: i32,
-    pub funcname: &'static str,
-}
-
-impl Function {
-    pub fn new() -> Function {
-        Function {
-            body: Vec::new(),
-            variables: Vec::new(),
-            params: Vec::new(),
-            stack_size: 0,
-            funcname: "",
-        }
-    }
-}
-
-static mut PROGRAM:Vec<Function> = Vec::new();
-
-// 语法解析入口函数
-// program = functionDefinition*
-pub fn parse(tokens: &Vec<Token>) -> &mut Vec<Function> {
-    while get_cur_token(tokens).kind != TokenType::TkEof {
-        function(tokens);
-    }
-    unsafe { &mut PROGRAM }
+    let tmp = compound_stmt(tokens);
+    unsafe { GLOBALS.last_mut().unwrap().body.push(tmp) };
 }

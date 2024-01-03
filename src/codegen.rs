@@ -1,7 +1,11 @@
-use crate::{parse::{NodeType, Node, Function}, util::align_to, types::{Type, TypeKind}};
+use std::sync::Mutex;
 
+use crate::{parse::{NodeType, Node, Obj}, util::align_to, types::{Type, TypeKind}};
+use lazy_static::lazy_static;
 
-
+lazy_static! {
+    static ref GLOBL: Mutex<Vec<Obj>> = Mutex::new(Vec::new());
+}
 
 static mut DEPTH:i32  = 0;
 
@@ -34,10 +38,10 @@ fn pop(reg: &str){
 }
 
 // 根据变量的链表计算出偏移量
-fn assign_lvar_offsets(program: &mut Vec<Function>) {
+fn assign_lvar_offsets(program: &mut Vec<Obj>) {
     for func in program {
         let mut offset:i32 = 0;
-        func.variables.iter_mut().rev().for_each(|var| {
+        func.locals.iter_mut().rev().for_each(|var| {
             // 每个变量分配空间
             offset += var.ty.as_ref().unwrap().size as i32;
             var.offset = - offset;
@@ -74,12 +78,19 @@ fn store(){
 
 // 计算给定节点的绝对地址
 // 如果报错，说明节点不在内存中
-fn gen_lval(nd: &Box<Node>, func: &Function) {
+fn gen_addr(nd: &Box<Node>, func: &Obj) {
     match nd.kind {
         NodeType::NdVar => {
             let var_index = nd.var.unwrap();
-            let offset = func.variables[var_index].offset;
-            println!("  # 获取变量{}的栈内地址为{}(fp)", func.variables[var_index].name, offset);
+            // 全局变量
+            if nd.is_gobal {
+                let offset = GLOBL.lock().unwrap()[var_index].offset;
+                println!("  # 获取全局变量{}的栈内地址为{}", GLOBL.lock().unwrap()[var_index].name, offset);
+                println!("  la a0, {}", GLOBL.lock().unwrap()[var_index].name);
+                return;
+            }
+            let offset = func.locals[var_index].offset;
+            println!("  # 获取变量{}的栈内地址为{}(fp)", func.locals[var_index].name, offset);
             println!("  addi a0, fp, {}", offset);
             return;
         },
@@ -91,7 +102,7 @@ fn gen_lval(nd: &Box<Node>, func: &Function) {
 }
 
 
-fn genexpr(nd: &Box<Node>, func: &Function) {
+fn genexpr(nd: &Box<Node>, func: &Obj) {
     match nd.kind {
         NodeType::NdNum => {
             println!("  # 将{}加载到a0中", nd.val.unwrap());
@@ -105,20 +116,20 @@ fn genexpr(nd: &Box<Node>, func: &Function) {
             return;
         },
         NodeType::NdVar => {
-            gen_lval(nd, func);
+            gen_addr(nd, func);
             // load(&func.variables[nd.var.unwrap()].ty.as_ref().unwrap());
             load(&nd.ty.as_ref().unwrap());
             return;
         },
         NodeType::NdAssign => {
-            gen_lval(nd.lhs.as_ref().unwrap(), func);
+            gen_addr(nd.lhs.as_ref().unwrap(), func);
             push();
             genexpr(nd.rhs.as_ref().unwrap(), func);
             store();
             return;
         },
         NodeType::NdAddr => {
-            gen_lval(nd.lhs.as_ref().unwrap(), func);
+            gen_addr(nd.lhs.as_ref().unwrap(), func);
             return;
         },
         NodeType::NdDeref => {
@@ -169,7 +180,7 @@ fn genexpr(nd: &Box<Node>, func: &Function) {
     }
 }
 
-fn genstmt(nd: &Box<Node>, func: &Function) {
+fn genstmt(nd: &Box<Node>, func: &Obj) {
     match nd.kind {
         NodeType::NdIf => {
             // 代码段计数
@@ -237,7 +248,7 @@ fn genstmt(nd: &Box<Node>, func: &Function) {
         },
         NodeType::NdReturn => {
             genexpr(&nd.lhs.as_ref().unwrap(), func);
-            println!("  j .L.return.{}", func.funcname);
+            println!("  j .L.return.{}", func.name);
             return;
         }
         _ => panic!("unexpected node type: {:?}", nd.kind),
@@ -245,14 +256,18 @@ fn genstmt(nd: &Box<Node>, func: &Function) {
 }
 
 
-pub fn codegen(program: &mut Vec<Function>) {
-    assign_lvar_offsets(program);
+pub fn emit_text(program: &mut Vec<Obj>) {
     // 为每个函数单独生成代码
     for func in program {
-        println!("  # 定义全局{}段", func.funcname);
-        println!(".globl {}", func.funcname);
-        println!("\n# ====={}段开始================", func.funcname);
-        println!("{}:", func.funcname);
+        if func.is_function == false {
+            continue;
+        }
+        println!("  # 定义全局{}段", func.name);
+        println!(".globl {}", func.name);
+        println!("  # 代码段标签");
+        println!(".text");
+        println!("\n# ====={}段开始================", func.name);
+        println!("{}:", func.name);
         // 栈布局
         //-------------------------------// sp
         //              ra
@@ -287,7 +302,7 @@ pub fn codegen(program: &mut Vec<Function>) {
 
 
         // 生成语句的代码
-        println!("\n# ====={}段主体===============", func.funcname);
+        println!("\n# ====={}段主体===============", func.name);
         func.body.iter().for_each(|nd| {
             genstmt(nd, func);
             assert_eq!(unsafe { DEPTH }, 0);
@@ -295,8 +310,8 @@ pub fn codegen(program: &mut Vec<Function>) {
 
         // Epilogue，后语
         // 输出return段标签
-        println!("\n# ====={}段结束===============", func.funcname);
-        println!(".L.return.{}:", func.funcname);
+        println!("\n# ====={}段结束===============", func.name);
+        println!(".L.return.{}:", func.name);
         // 将fp的值改写回sp
         println!("  mv sp, fp");
         // 将最早fp保存的值弹栈，恢复fp。
@@ -308,4 +323,28 @@ pub fn codegen(program: &mut Vec<Function>) {
         // 返回
         println!("  ret");
     }
+}
+
+fn emit_data(program: &mut Vec<Obj>) {
+    println!("\n# =====数据段开始================");
+    for func in program {
+        if func.is_function {
+            continue;
+        }
+        println!("  # 数据段标签");
+        println!(".data");
+        println!("  .globl {}", func.name);
+        println!("  # 全局变量{}", func.name);
+        println!("{}:", func.name);
+        println!("  # 零填充{}位", func.ty.as_ref().unwrap().size);
+        println!("  .zero {}", func.ty.as_ref().unwrap().size);
+    }
+    println!("\n# =====数据段结束================");
+}
+
+pub fn codegen(program: &mut Vec<Obj>) {
+    GLOBL.lock().unwrap().clone_from(program);
+    assign_lvar_offsets(program);
+    emit_data(program);
+    emit_text(program);
 }

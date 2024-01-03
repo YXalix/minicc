@@ -1,4 +1,5 @@
 extern crate lazy_static;
+
 mod tokenizer;
 mod codegen;
 mod util;
