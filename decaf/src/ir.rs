@@ -44,16 +44,12 @@ pub enum IrStmt {
     Label(u32),
     // 弹出栈顶的值，如果它等于0，则跳转到对应标号，否则继续执行下一条语句
     Bz(u32),
-    // 弹出栈顶的值，如果它不等于0，则跳转到对应标号，否则继续执行下一条语句
-    Bnz(u32),
     // 跳转到对应标号
     Jump(u32),
     // 调用IrProg.funcs对应下标的函数，调用前运算栈中需要从左到右依次压入参数(最右边的参数在栈顶
     // 调用后这些参数都被弹出，且运算栈中压入函数的返回值
     // 注意这里并不涉及调用约定的细节，比如到底是caller还是callee把参数弹出运算栈，把返回值压入运算栈的，只是说整个调用结束后结果应该是这样
-    Call(u32),
-    // 交换栈顶和次栈顶的两个元素，这条指令目前只是为了实现整数+指针而存在的
-    Swap,
+    Call(&'static str),
     // 入栈
     Push,
     // 弹出栈顶元素
@@ -181,7 +177,7 @@ fn func<'a>(f: &Func, funcs: &FuncMap<'a>, globs: &SymbolMap<'a>) -> IrFunc {
     }
     // 现在的ctx.var_cnt是包含了参数数目在内的，要得到真正的局部变量的数目需要减去参数数目
     let param_cnt = f.params.len() as u32;
-    IrFunc { name: f.name, param_cnt, var_cnt: ctx.var_cnt - param_cnt, stmts: ctx.stmts }
+    IrFunc { name: f.name, param_cnt, var_cnt: ctx.var_cnt, stmts: ctx.stmts }
     
 }
 
@@ -249,13 +245,14 @@ fn decl<'a>(ctx: &mut FuncCtx<'a, '_>, d: &'a Decl, is_param: bool) {
     // 有数组之前每个变量只占据栈中的一个位置，现在有数组了，一个变量可以占据多个位置
     // 为了让变量id能够容易地对应到变量在栈上的偏移量，这里也需要把id增加数组大小的数目
     // 而且代码生成阶段栈是向下增长的，但数组地址必须是数组中地址最低的地址，所以用数组中最后一个元素的id来表示数组
-    let mut id = ctx.var_cnt + d.dims.iter().product::<u32>() - 1;
+    let mut id = ctx.var_cnt;
     // 只在最后一个SymbolMap，也就是当前语句所在的语句块的SymbolMap中定义这个变量
     if ctx.names.last_mut().unwrap().contains_key(d.name) {
         id = ctx.names.last_mut().unwrap().get(d.name).unwrap().0;
     } else {
         ctx.names.last_mut().unwrap().insert(d.name, (id, d));
-        ctx.var_cnt += 1;
+        ctx.var_cnt += d.dims.iter().product::<u32>();
+        id = ctx.var_cnt - 1;
     }
     if let Some(x) = &d.init {
         if is_param {
@@ -287,6 +284,34 @@ fn gen_addr<'a>(ctx: &mut FuncCtx<'a, '_>, e: &'a Expr) -> (Ty, Vec<u32>) {
             let (ty, dims) = genexpr(ctx, e);
             return (Ty{kind: ty.kind, count: ty.count - 1}, dims)
         },
+        Expr::Index(e, idx) => {
+            let (mut ty, mut dims) = genexpr(ctx, e);
+            ctx.stmts.push(IrStmt::Push);
+            let (idx_ty, _) = genexpr(ctx, idx);
+            ctx.stmts.push(IrStmt::Pop(1));
+            match idx_ty.kind {
+                TypeKind::TyInt => {
+                    if ty.count > 1 {
+                        ty.count -= 1;
+                        let mut num = 1;
+                        for i in 0..ty.count {
+                            num *= dims[ty.count as usize - i as usize];
+                        }
+                        ctx.stmts.push(IrStmt::Mul(0, 8 * num));
+                        ctx.stmts.push(IrStmt::Binary(Add));
+                        dims.remove(0);
+                    } else {
+                        ty.kind = TypeKind::TyInt;
+                        ty.count = 0;
+                        ctx.stmts.push(IrStmt::Mul(0, 8));
+                        ctx.stmts.push(IrStmt::Binary(Add));
+                        dims.clear();
+                    }
+                },
+                _ => panic!("index must be an integer"),
+            }
+            return (ty, dims)
+        },
         _ => panic!("not an lvalue"),
     }
 }
@@ -307,9 +332,25 @@ fn genexpr<'a>(ctx: &mut FuncCtx<'a, '_>, e: &'a Expr) -> (Ty, Vec<u32>) {
                 },
                 UnaryOp::Deref => {
                     // 为了翻译一个取值的表达式，先翻译它的子表达式, 再按照子表达式的值作为地址取值
-                    let (ty, dims) = genexpr(ctx, e);
-                    ctx.stmts.push(IrStmt::Load);
-                    return (Ty{kind: ty.kind, count: ty.count - 1}, dims)
+                    let (mut ty, mut dims) = genexpr(ctx, e);
+                    match ty.kind {
+                        TypeKind::TyArrayInt | TypeKind::TyArrayChar => {
+                            if ty.count > 1 {
+                                ty.count -= 1;
+                                dims.remove(0);
+                            } else {
+                                ty.kind = TypeKind::TyInt;
+                                ty.count = 0;
+                                dims.clear();
+                                ctx.stmts.push(IrStmt::Load);
+                            }
+                        },
+                        _ => {
+                            ty.count -= 1;
+                            ctx.stmts.push(IrStmt::Load);
+                        }
+                    }
+                    return (Ty{kind: ty.kind, count: ty.count}, dims)
                 },
                 _ => {
                     // 为了翻译一个unary表达式，先翻译它的子表达式，这样栈顶就是子表达式的值，再对栈顶的值进行相应的操作
@@ -334,12 +375,20 @@ fn genexpr<'a>(ctx: &mut FuncCtx<'a, '_>, e: &'a Expr) -> (Ty, Vec<u32>) {
                         (Ty{kind: TypeKind::TyInt, count: 0,}, vec![])
                     } else if ty1.count == 0 && ty2.count > 0 {
                         // 整数+指针，结果是指针
-                        ctx.stmts.push(IrStmt::Mul(0, 8));
+                        let mut num = 1;
+                        for i in 0..(ty2.count-1) {
+                            num *= dims2[ty2.count as usize - 1 - i as usize];
+                        }
+                        ctx.stmts.push(IrStmt::Mul(0, num * 8));
                         ctx.stmts.push(IrStmt::Binary(*op));
                         (Ty{kind: ty2.kind, count: ty2.count,}, dims2)
                     } else if ty1.count > 0 && ty2.count == 0 {
                         // 指针+整数，结果是指针
-                        ctx.stmts.push(IrStmt::Mul(1, 8));
+                        let mut num = 1;
+                        for i in 0..(ty1.count-1) {
+                            num *= dims1[ty1.count as usize - 1 - i as usize];
+                        }
+                        ctx.stmts.push(IrStmt::Mul(1, num * 8));
                         ctx.stmts.push(IrStmt::Binary(*op));
                         (Ty{kind: ty1.kind, count: ty1.count,}, dims1)
                     } else {
@@ -361,15 +410,83 @@ fn genexpr<'a>(ctx: &mut FuncCtx<'a, '_>, e: &'a Expr) -> (Ty, Vec<u32>) {
         Expr::Assign(e1, e2) => {
             let (ty1, _) = gen_addr(ctx, e1);
             ctx.stmts.push(IrStmt::Push);
-            let (_, _) = genexpr(ctx, e2);
+            let (_, dims) = genexpr(ctx, e2);
             ctx.stmts.push(IrStmt::Store);
-            (ty1, vec![])
+            (ty1, dims)
         },
         Expr::Var(_) => {
             let (ty, dims) = gen_addr(ctx, e);
-            ctx.stmts.push(IrStmt::Load);
+            if ty.kind != TypeKind::TyArrayChar && ty.kind != TypeKind::TyArrayInt {
+                ctx.stmts.push(IrStmt::Load);
+            }
             (ty, dims)
         },
-        _ => panic!("not implemented"),
+        Expr::Call(f, args) => {
+            // 计算所有参数的值，正向压栈
+            for arg in args.iter().rev() {
+                genexpr(ctx, arg);
+                ctx.stmts.push(IrStmt::Push);
+            }
+            // 将所有参数的值，反向弹栈，存入对应的寄存器中
+            for i in 0..args.len() {
+                ctx.stmts.push(IrStmt::Pop(i as u32));
+            }
+            // 然后生成一条Call指令，这样函数调用结束后，栈顶就是函数的返回值
+            ctx.stmts.push(IrStmt::Call(*f));
+            (Ty{kind: TypeKind::TyInt, count: 0,}, vec![])
+        },
+        Expr::Condition(_, _, _) => todo!("condition"),
+        Expr::Deref(_) => todo!("deref"),
+        Expr::AddrOf(_) => todo!("addr_of"),
+        Expr::SizeOf(e) => {
+            let (ty, dims) = genexpr(ctx, e);
+            let size = match ty.kind {
+                TypeKind::TyInt => 8,
+                TypeKind::TyChar => 1,
+                TypeKind::TyArrayInt | TypeKind::TyArrayChar => {
+                    let mut num = 1;
+                    for i in 0..ty.count {
+                        num *= dims[ty.count as usize - 1 - i as usize];
+                    }
+                    if ty.kind == TypeKind::TyArrayInt {
+                        num * 8
+                    } else {
+                        num
+                    }
+                },
+            };
+            ctx.stmts.push(IrStmt::Num(size as i32));
+            (Ty{kind: TypeKind::TyInt, count: 0,}, vec![])
+        },
+        Expr::Cast(_, _) => todo!("cast"),
+        Expr::Index(e, idx) => {
+            let (mut ty, mut dims) = genexpr(ctx, e);
+            ctx.stmts.push(IrStmt::Push);
+            let (idx_ty, _) = genexpr(ctx, idx);
+            ctx.stmts.push(IrStmt::Pop(1));
+            match idx_ty.kind {
+                TypeKind::TyInt => {
+                    if ty.count > 1 {
+                        ty.count -= 1;
+                        let mut num = 1;
+                        for i in 0..ty.count {
+                            num *= dims[ty.count as usize - i as usize];
+                        }
+                        ctx.stmts.push(IrStmt::Mul(0, 8 * num));
+                        ctx.stmts.push(IrStmt::Binary(Add));
+                        dims.remove(0);
+                    } else {
+                        ty.kind = TypeKind::TyInt;
+                        ty.count = 0;
+                        ctx.stmts.push(IrStmt::Mul(0, 8));
+                        ctx.stmts.push(IrStmt::Binary(Add));
+                        dims.clear();
+                        ctx.stmts.push(IrStmt::Load);
+                    }
+                },
+                _ => panic!("index must be an integer"),
+            }
+            return (ty, dims)
+        },
     }
 }

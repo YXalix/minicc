@@ -9,6 +9,8 @@ pub struct Prog {
 pub enum TypeKind {
   TyChar,
   TyInt,
+  TyArrayInt,
+  TyArrayChar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

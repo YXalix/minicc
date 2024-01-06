@@ -47,7 +47,7 @@ impl Parser {
             }
             // 全局变量
             let glob = Parser::prog_glob(p);
-            prog.globs.push(glob);
+            prog.globs.extend(glob);
         }
         prog
     }
@@ -60,6 +60,8 @@ impl Parser {
         let ty = Parser::declspec(p);
 
         if p.cur_token().equal(";") {
+            // 还原index
+            p.now_index = index;
             return false;
         }
         let (params, _) = Parser::declarator(p, ty);
@@ -73,13 +75,21 @@ impl Parser {
         return false;
     }
 
-    fn prog_glob(p: &mut Tokenizer) -> Decl {
+    fn prog_glob(p: &mut Tokenizer) -> Vec<Decl> {
         let ty = Parser::declspec(p);
-        let (_, decl) = Parser::declarator(p, ty);
-        if let Some(decl) = decl {
-            return decl;
-        } else {
-            panic!("expected decl, but got {:?}", p.cur_token());
+        let mut decls = Vec::new();
+        let mut count = 0;
+        loop {
+            if count > 0 {
+                p.consume(",");
+            }
+            count += 1;
+            let (_, decl) = Parser::declarator(p, ty);
+            decls.push(decl.unwrap());
+            if p.cur_token().charactors == ";" {
+                p.skip();
+                return decls;
+            }
         }
     }
 
@@ -120,23 +130,32 @@ impl Parser {
         let name = p.cur_token().charactors;
         p.skip();
         let mut dims = Vec::new();
-        let (params, dims) = Parser::type_suffix(p, &mut dims);
+        let params = Parser::type_suffix(p, &mut dims);
 
         // 如果是函数
         if let Some(params) = params {
             let func = Func { ret: ty, name, params, stmts: None };
             return (Some(func), None);
         } else {
+            // 如果是变量
+            if dims.len() > 0 {
+                if ty.kind == TypeKind::TyChar {
+                    ty.kind = TypeKind::TyArrayChar;
+                } else {
+                    ty.kind = TypeKind::TyArrayInt;
+                }
+                ty.count += dims.len() as u32;
+            }
             let decl = Decl { ty, name, dims, init: None };
             return (None, Some(decl));
         }
     }
 
     // typeSuffix = "(" funcParams | "[" num "]" typeSuffix | ε
-    fn type_suffix(p: &mut Tokenizer, dims: &mut Vec<u32>) -> (Option<Vec<Decl>>, Vec<u32>) {
+    fn type_suffix(p: &mut Tokenizer, dims: &mut Vec<u32>) -> Option<Vec<Decl>> {
         if p.cur_token().charactors == "(" {
             let params = Parser::func_params(p);
-            return (Some(params), Vec::new());
+            return Some(params);
         }
         if p.cur_token().charactors == "[" {
             p.skip();
@@ -144,13 +163,13 @@ impl Parser {
                 p.skip();
                 p.consume("]");
                 dims.push(x as u32);
-                let (_, dims) = Parser::type_suffix(p, dims);
-                return (None, dims);
+                return Parser::type_suffix(p, dims);  
+
             } else {
                 panic!("expected number, but got {:?}", p.cur_token());
             }
         }
-        return (None, Vec::new());
+        return None;
     }
 
     // funcParams = (param ("," param)*)? ")"
@@ -158,12 +177,12 @@ impl Parser {
     fn func_params(p: &mut Tokenizer) -> Vec<Decl> {
         let mut params = Vec::new();
         p.consume("(");
-        let mut flag = true;
+        let mut count = 0;
         while p.cur_token().charactors != ")" {
-            if flag {
+            if count > 0 {
                 p.consume(",");
             }
-            flag = false;
+            count += 1;
             let ty = Parser::declspec(p);
             let (_, decl) = Parser::declarator(p, ty);
             if let Some(decl) = decl {

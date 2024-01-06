@@ -42,11 +42,17 @@ pub fn write_asm(p: &IrProg) {
         // 将sp向下移动offset
         println!("  addi sp, sp, -{}", offset);
 
+        // 将参数保存到栈中
+        for i in 0..f.param_cnt {
+            println!("  sd {}, -{}(fp)", ARG_REG[i as usize], (f.param_cnt - i) * 8);
+        }
+
         for s in &f.stmts {
             println!("  # {:?}", s); // 输出一条注释，表示下面的汇编对应IR中的什么指令，方便调试
             match s {
                 IrStmt::Mul(a, x) => {
-                    println!("  mul {}, {}, x{}", ARG_REG[*a as usize], ARG_REG[*a as usize], x);
+                    println!("  li t0, {}", x);
+                    println!("  mul {}, {}, t0", ARG_REG[*a as usize], ARG_REG[*a as usize]);
                 },
                 IrStmt::StoreParam(x) => {
                     println!("  sd {}, {}(fp)\n", ARG_REG[*x as usize], (x + 1) * 8 );
@@ -116,16 +122,12 @@ pub fn write_asm(p: &IrProg) {
                 IrStmt::Bz(c) => {
                     println!("  beqz a0, .L{}", c);
                 },
-                IrStmt::Bnz(c) => {
-                    println!("  bnez a0, .L{}", c);
-                },
                 IrStmt::Jump(c) => {
                     println!("  j .L{}", c);
                 },
                 IrStmt::Call(c) => {
                     println!("  call {}", c);
                 }
-                IrStmt::Swap => todo!(),
                 IrStmt::Push => {
                     println!("  addi sp, sp, -8");
                     println!("  sd a0, 0(sp)");
