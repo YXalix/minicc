@@ -8,9 +8,9 @@ mod types;
 
 use std::env;
 
-use crate::
-    {tokenizer::Token,
-    codegen::codegen};
+// use crate::
+//     {tokenizer::Token,
+//     codegen::codegen};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,8 +18,9 @@ fn main() {
         eprintln!("{} invalid number of arguments", args[0]);
         return;
     }
-    let p = args[1].clone().leak();
-    let tokens = Token::tokenize(p);
-    let mut program = parse::parse(&tokens);
-    codegen(&mut program);
+    let p: &mut str = args[1].clone().leak();
+    // let tokens = Token::tokenize(p);
+    // let mut program = parse::parse(&tokens);
+    // codegen(&mut program);
+    decaf::run(p);
 }

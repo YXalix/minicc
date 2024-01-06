@@ -70,10 +70,14 @@ fn load(ty: &Box<Type>){
 }
 
 // 将栈顶值(为一个地址)存入a0
-fn store(){
+fn store(ty: &Box<Type>){
     pop("a1");
     println!("  # 将a0的值, 写入到a1中存放的地址");
-    println!("  sd a0, 0(a1)");
+    if ty.size == 1 {
+        println!("  sb a0, 0(a1)");
+    } else {
+        println!("  sd a0, 0(a1)");
+    }
 }
 
 // 计算给定节点的绝对地址
@@ -125,7 +129,7 @@ fn genexpr(nd: &Box<Node>, func: &Obj) {
             gen_addr(nd.lhs.as_ref().unwrap(), func);
             push();
             genexpr(nd.rhs.as_ref().unwrap(), func);
-            store();
+            store(nd.ty.as_ref().unwrap());
             return;
         },
         NodeType::NdAddr => {
@@ -297,7 +301,11 @@ pub fn emit_text(program: &mut Vec<Obj>) {
 
         func.params.iter().enumerate().for_each(|(i,param)|{
             println!("  # 将{}寄存器的值存入{}的栈地址", ARG_REG[i], param.name);
-            println!("  sd {}, {}(fp)\n", ARG_REG[i], param.offset);
+            if param.ty.as_ref().unwrap().size == 1 {
+                println!("  sb {}, {}(fp)\n", ARG_REG[i], param.offset);
+            } else {
+                println!("  sd {}, {}(fp)\n", ARG_REG[i], param.offset);
+            }
         });
 
 

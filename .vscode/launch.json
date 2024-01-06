@@ -20,7 +20,7 @@
                 }
             },
             "args": [
-                "int x; int main() { return x; }"
+                "int main() { int x=3; int y=5; return *(&y-1); }"
             ],
             "cwd": "${workspaceFolder}"
         },

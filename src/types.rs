@@ -9,6 +9,7 @@
 #[derive(Clone)]
 #[derive(PartialEq)]
 pub enum TypeKind {
+    TyChar,  // char字符类型
     TyInt, // 整数类型
     TyPtr, // 指针类型
     TyFunc, // 函数类型
@@ -47,6 +48,12 @@ impl Type {
         temp
     }
 
+    pub fn new_char_type() -> Box<Type> {
+        let mut temp = Type::new(TypeKind::TyChar, None);
+        temp.size = 1;
+        temp
+    }
+
     pub fn is_ptr(&self) -> bool {
         match self.kind {
             TypeKind::TyPtr => true,
@@ -57,7 +64,7 @@ impl Type {
 
     pub fn is_integer(&self) -> bool {
         match self.kind {
-            TypeKind::TyInt => true,
+            TypeKind::TyInt | TypeKind::TyChar => true,
             _ => false,
         }
     }

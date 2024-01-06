@@ -349,7 +349,7 @@ fn new_gvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 
 // GLOBALS = functionDefinition*
 // functionDefinition = declspec declarator "{" compoundStmt*
-// declspec = "int"
+// declspec = "char" | "int"
 // declarator = "*"* ident typeSuffix
 // typeSuffix = "(" funcParams | "[" num "]" typeSuffix | ε
 // funcParams = (param ("," param)*)? ")"
@@ -376,9 +376,17 @@ fn new_gvar(tokens: &Vec<Token>, tok: Option<usize>, ty: Box<Type>) -> usize {
 // primary = "(" expr ")" | "sizeof" unary | ident funcArgs? | num
 
 
-// declspec = "int"
+// declspec = "char" | "int"
 // declarator specifier
 fn declspec(tokens: &Vec<Token>) -> Box<Type> {
+
+    // "char"
+    if get_cur_token(tokens).equal("char") {
+        comsume(tokens, "char");
+        return Type::new_char_type();
+    }
+
+    // "int"
     comsume(tokens, "int");
     Type::new_int_type()
 }
@@ -563,7 +571,7 @@ fn compound_stmt(tokens: &Vec<Token>) -> Box<Node> {
     let mut node = Node::new_node(NodeType::NdBloc);
     while get_cur_token(tokens).equal("}") == false {
         // declaration
-        if get_cur_token(tokens).equal("int") {
+        if is_typename(tokens) {
             node.body.push(declaration(tokens));
         } else {
             node.body.push(stmt(tokens));
@@ -897,6 +905,10 @@ fn global_variable(tokens: &Vec<Token>, basety: Box<Type>) {
 }
 
 
+// 判断是否为类型名
+fn is_typename(tokens: &Vec<Token>) -> bool {
+    return get_cur_token(tokens).equal("char") || get_cur_token(tokens).equal("int");
+  }
 
 // functionDefinition = declspec declarator "{" compoundStmt*
 fn function(tokens: &Vec<Token>, basety: Box<Type>) {

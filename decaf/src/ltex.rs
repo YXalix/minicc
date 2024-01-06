@@ -1,3 +1,5 @@
+use std::char;
+
 // keywords
 static KEYWORDS: [&str; 7] = ["return", "if", "else", "for", "while","int", "sizeof"]; 
 
@@ -37,6 +39,14 @@ impl Token {
             return false;
         }
     }
+
+    pub fn equal(&self, charactors: &'static str) -> bool {
+        if self.charactors == charactors {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Tokenizer {
@@ -51,9 +61,17 @@ impl Tokenizer {
         &self.tokens[self.now_index]
     }
 
-    pub fn next_token(&mut self) -> &Token {
+    pub fn consume(&mut self, charactors: &'static str) -> bool {
+        if self.cur_token().charactors == charactors {
+            self.now_index += 1;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn skip(&mut self) {
         self.now_index += 1;
-        &self.tokens[self.now_index]
     }
 
     pub fn tokenize(&mut self, input: &'static str) {
