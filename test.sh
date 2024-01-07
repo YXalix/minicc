@@ -29,8 +29,10 @@ assert() {
   riscv64-unknown-elf-gcc -static -o tmp tmp.s tmp2.o
 
   # 运行生成出来目标文件
+  # For ubuntu users
   qemu-riscv64 -L $RISCV/sysroot ./tmp
-  # $RISCV/bin/spike --isa=rv64gc $RISCV/riscv64-unknown-linux-gnu/bin/pk ./tmp
+  # For mac users
+  # spike pk ./tmp
 
   # 获取程序返回值，存入 实际值
   actual="$?"
